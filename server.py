@@ -5,12 +5,17 @@ import logging
 import os
 import ssl
 import uuid
+import numpy as np
+import datetime
+
 
 import cv2
 from aiohttp import web
 from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaBlackhole, MediaPlayer, MediaRecorder, MediaRelay
 from av import VideoFrame
+from PIL import ImageGrab, Image
+import time
 
 ROOT = os.path.dirname(__file__)
 
@@ -18,25 +23,50 @@ logger = logging.getLogger("pc")
 pcs = set()
 relay = MediaRelay()
 
+max_chunk_size_mb = 100
 
 class VideoTransformTrack(MediaStreamTrack):
+
     """
     A video stream track that transforms frames from an another track.
     """
-
     kind = "video"
 
     def __init__(self, track, transform):
         super().__init__()  # don't forget this!
         self.track = track
         self.transform = transform
+        self.frames = []
+        self.start_time = time.time()
+        self.result =[]
+        time_stamp = datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')
+        self.result = cv2.VideoWriter(f"Drone_videos/Video_{time_stamp}.avi",
+                                 cv2.VideoWriter_fourcc(*'MJPG'), 25, (640, 480))
 
     async def recv(self):
+        # print("--------------Receiving video format---------------------")
         frame = await self.track.recv()
+        img = frame.to_ndarray(format="bgr24")
+        print(type(img))
+        print(img.shape)
+        img = cv2.resize(img, (640, 480))
+        # cv2.imshow("test", ))
+        current_time = time.time()
+        # property_id = int(cv2.CAP_PROP_FRAME_COUNT)
+        # length=int(cv2.VideoCapture(self.result, property_id))
+        # print(length)
+        print(current_time - self.start_time)
+        self.result.write(img)
+        if (current_time - self.start_time)>10:
+            print('-----------------------000000--------------')
+            self.result.release()
+            time_stamp = datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')
+            self.result = cv2.VideoWriter(f"Drone_videos/Video_{time_stamp}.avi",
+                                          cv2.VideoWriter_fourcc(*'MJPG'), 25, (640, 480))
+            self.start_time=current_time
 
         if self.transform == "cartoon":
             img = frame.to_ndarray(format="bgr24")
-
             # prepare color
             img_color = cv2.pyrDown(cv2.pyrDown(img))
             for _ in range(6):
@@ -60,16 +90,23 @@ class VideoTransformTrack(MediaStreamTrack):
 
             # rebuild a VideoFrame, preserving timing information
             new_frame = VideoFrame.from_ndarray(img, format="bgr24")
+
             new_frame.pts = frame.pts
             new_frame.time_base = frame.time_base
             return new_frame
         elif self.transform == "edges":
             # perform edge detection
             img = frame.to_ndarray(format="bgr24")
+            # img = cv2.resize(img,(640, 480))
+            # cv2.imshow("test", ))
+            # cv2.waitKey(1)
+
+            # self.result.write(img)
             img = cv2.cvtColor(cv2.Canny(img, 100, 200), cv2.COLOR_GRAY2BGR)
+            new_frame = VideoFrame.from_ndarray(img, format="bgr24")
 
             # rebuild a VideoFrame, preserving timing information
-            new_frame = VideoFrame.from_ndarray(img, format="bgr24")
+           # new_frame = VideoFrame.from_ndarray(img, format="bgr24")
             new_frame.pts = frame.pts
             new_frame.time_base = frame.time_base
             return new_frame
@@ -89,18 +126,21 @@ class VideoTransformTrack(MediaStreamTrack):
             return frame
 
 
+
+
 async def index(request):
-    content = open(os.path.join(ROOT, "index.html"), "r").read()
+    content = open(os.path.join(ROOT, "whep_index_Day1.html"), "r").read()
     return web.Response(content_type="text/html", text=content)
 
 
 async def javascript(request):
-    content = open(os.path.join(ROOT, "client_2.js"), "r").read()
+    content = open(os.path.join(ROOT, "whep_client_Day3_.js"), "r").read()
     return web.Response(content_type="application/javascript", text=content)
 
 
 async def offer(request):
     params = await request.json()
+    print('---test --1----')
     offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
 
     pc = RTCPeerConnection()
@@ -113,7 +153,7 @@ async def offer(request):
     log_info("Created for %s", request.remote)
 
     # prepare local media
-    player = MediaPlayer(os.path.join(ROOT, "demo-instruct.wav"))
+    #player = MediaPlayer(os.path.join(ROOT, "demo-instruct.wav"))
     if args.record_to:
         recorder = MediaRecorder(args.record_to)
     else:
@@ -123,6 +163,7 @@ async def offer(request):
     def on_datachannel(channel):
         @channel.on("message")
         def on_message(message):
+            print('Test case: ' , message)
             if isinstance(message, str) and message.startswith("ping"):
                 channel.send("pong" + message[4:])
 
@@ -141,6 +182,7 @@ async def offer(request):
             pc.addTrack(player.audio)
             recorder.addTrack(track)
         elif track.kind == "video":
+            log_info("Inside Video")
             pc.addTrack(
                 VideoTransformTrack(
                     relay.subscribe(track), transform=params["video_transform"]
@@ -156,12 +198,15 @@ async def offer(request):
 
     # handle offer
     await pc.setRemoteDescription(offer)
+    print(' The offer is received to the Python Peer :')
     await recorder.start()
 
     # send answer
     answer = await pc.createAnswer()
+    print(' Answer is created from Python Peer : ')
     await pc.setLocalDescription(answer)
-
+    print (' Answer is sending to the Recat Peer')
+    print('======================================================')
     return web.Response(
         content_type="application/json",
         text=json.dumps(
@@ -187,7 +232,7 @@ if __name__ == "__main__":
         "--host", default="0.0.0.0", help="Host for HTTP server (default: 0.0.0.0)"
     )
     parser.add_argument(
-        "--port", type=int, default=8080, help="Port for HTTP server (default: 8080)"
+        "--port", type=int, default=8081, help="Port for HTTP server (default: 8080)"
     )
     parser.add_argument("--record-to", help="Write received media to a file.")
     parser.add_argument("--verbose", "-v", action="count")
@@ -203,12 +248,14 @@ if __name__ == "__main__":
         ssl_context.load_cert_chain(args.cert_file, args.key_file)
     else:
         ssl_context = None
-
+    print('Lets start an web application')
     app = web.Application()
     app.on_shutdown.append(on_shutdown)
     app.router.add_get("/", index)
-    app.router.add_get("/client_2.js", javascript)
+    app.router.add_get("/whep_client_Day3_.js", javascript)
     app.router.add_post("/offer", offer)
     web.run_app(
         app, access_log=None, host=args.host, port=args.port, ssl_context=ssl_context
     )
+
+console.log('===========================WHEP CLient function.')
